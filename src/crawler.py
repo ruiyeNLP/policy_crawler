@@ -1,12 +1,13 @@
 """
 Privacy Policy Project
 Web Crawler
-Takes in list of Amazon Alexa Top N sites, visits them and tries to
+Takes in list of domains, visits them and tries to
 discover the link to and download the Privacy Policy HTML page for
 that site.  Also attempts to visit links contained within the policies
-to discover relevant linked content.  Outputs directory of HTML docs
-containing privacy policies and a txt file containing an audit trail
-of links visited and decisions about those policies.
+to discover relevant linked content. And compare the found link of the 
+privacy policy with the true link.
+Outputs directory of HTML docs containing privacy policies and a txt 
+file containing an audit trail of links visited and decisions about those policies.
 """
 
 import argparse, datetime, json, matplotlib, os, pandas as pd, re, signal, sys
@@ -16,9 +17,6 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from utils.utils_reuse import print_progress_bar, request, get_driver, VerifyJsonExtension, myfox
 from verification.verify import get_ground_truth, is_duplicate_policy, is_english, mkdir_clean, strip_text, is_same_webpage
-
-
-
 
 class DomainLink():
     def __init__(self, link, sim_score, html_outfile, stripped_outfile, access_success, valid, duplicate):
@@ -100,6 +98,8 @@ def find_policy_links(full_url, html, current_links):
     be dealt with later in the process.
     In:     full_url - A string representing the full name of the URL
             soup - BeautifulSoup4 object instantiated with the HTML of the URL
+            current_links - [] means that the request was made with HTTP;
+                            not [] means the request was made with Selenium
     Out:    list of all links on the page
     """
     links = []    
@@ -108,21 +108,18 @@ def find_policy_links(full_url, html, current_links):
     keywords = find_keywords(country)
 
     for kw in keywords:        
-        #html case
+        #http request case
         if current_links == []:
             soup = BeautifulSoup(html, "html.parser")
             all_links = soup.find_all("a")
-            #print("all_links in find_policy_links", len(all_links))
+
             for link in all_links:
                 if "href" in link.attrs:
-                    #print(link.string, link["href"])
                     if (kw in str(link.string).lower()) or (kw in str(link["href"]).lower()):
                         final_link = link["href"]
-                        #print("final_link", final_link)
-
+          
                         if final_link in link_dict:
                             link_dict[final_link] += 1
-                        # print("Already visited this link -> skipping")
                             continue    # we've already visited this link, skip this whole thing
                         else:
                             link_dict[final_link] = 0
@@ -134,7 +131,6 @@ def find_policy_links(full_url, html, current_links):
 
                         # This link is complete, add it to our list
                         if "http" in final_link:
-                        # links.append(final_link)
                             links.append(clean_link(final_link))
                             continue
 
@@ -145,9 +141,8 @@ def find_policy_links(full_url, html, current_links):
                             final_link = "http://" + final_link[2:]
                         else:
                             final_link = full_url + final_link
-                    # links.append(final_link)
+                        
                         links.append(clean_link(final_link))
-                #print(links)
         else:
             all_links = current_links
             for i in range(len(all_links)):
@@ -206,17 +201,23 @@ def crawl(domain_zip):
     """
     domain = domain_zip[0]
     domain_policy = domain_zip[1]
-
+    
+    # complete the domain with prefix “https://www.” first 
+    # since “https://www.” covers most cases
     half_full_url = domain if ("www." in domain) else "www." + domain
     full_url = half_full_url if ("https" in half_full_url) else "https://" + half_full_url
     domain_html, all_links = request(full_url)
 
+    # request failed, try other prefixes to the domain
     if strip_text(domain_html) == "" and domain_html =="" and all_links ==[]:
-        full_url = domain if ("http" in domain) else  "http://" + domain        
+        full_url = domain if ("http" in domain) else  "http://" + domain       # try "http://"   
         domain_html, all_links = request(full_url)
+        
         if strip_text(domain_html) == "" and domain_html =="" and all_links ==[]:
-            full_url = domain if ("https" in domain) else  "https://" + domain
+            full_url = domain if ("https" in domain) else  "https://" + domain # try "https://" 
             domain_html, all_links = request(full_url)
+            
+            # all prefixed fail, so the domain fail to access
             if strip_text(domain_html) == "" and domain_html =="" and all_links ==[]:
                 failed_access_domain = CrawlReturn(domain, False, domain_policy)
                 with index.get_lock():  # Update progress bar
@@ -244,9 +245,8 @@ def crawl(domain_zip):
     depth_count = 0
     output_count = 0
     for link in links:
-        # link_html = request(link, driver)
         link_html, link_all_links = request(link)
-        link_contents = strip_text(link_html) #to-do: check whether it works for selenium cases
+        link_contents = strip_text(link_html) 
  
         if link_contents == "":
             domain_failed_links.append(link)
@@ -264,7 +264,6 @@ def crawl(domain_zip):
         # get similarity score, check against the score threshold to see if policy
         sim_score = verify(link_contents, ground_truth)
         is_policy = sim_score >= cos_sim_threshold
-        #print(link_html)
 
         # if this page is a policy, check duplicate then write out to file
         if is_policy:
